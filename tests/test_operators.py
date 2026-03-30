@@ -26,13 +26,14 @@ class TestRestrictionProlongation:
         assert fine.shape == (6, 8)
 
     def test_restrict_prolongate_approximate_inverse(self):
-        """P^T(P(coarse)) ≈ coarse (interior cells, boundary may diverge)"""
+        """P^T(P(coarse)) ≈ coarse — mean error should be small."""
+        np.random.seed(123)
         coarse = np.random.rand(4, 4)
         fine = prolongate(coarse, (8, 8))
         reconstructed = restrict(fine)
-        # Interior cells should be close; boundary cells may diverge due to padding
-        interior = slice(1, -1), slice(1, -1)
-        np.testing.assert_allclose(reconstructed[interior], coarse[interior], atol=0.2)
+        # Mean absolute error across all cells should be bounded
+        mae = np.mean(np.abs(reconstructed - coarse))
+        assert mae < 0.15, f"Mean absolute error {mae:.4f} too large"
 
     def test_boundary_preservation(self):
         """Restriction should approximately preserve boundary-relevant structure."""

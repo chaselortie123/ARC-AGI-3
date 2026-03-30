@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Demo runner: ARC-AGI-3 multigrid agent on a mock game.
+"""ARC-AGI-3 multigrid agent runner.
 
 Usage:
-    python run.py                    # mock environment
-    python run.py --toolkit          # official ARC-AGI Toolkit (requires arcagi package)
-    python run.py --steps 20         # custom step count
+    python run.py                              # mock environment
+    python run.py --game ls20                  # official ARC-AGI Toolkit
+    python run.py --game ls20 --render terminal
+    python run.py --mock --steps 20            # mock with custom steps
 """
 
 import argparse
@@ -13,7 +14,10 @@ import json
 import sys
 
 from agent import ArcMultigridAgent
-from env_adapter import MockArcEnvironment, ToolkitArcEnvironment
+from env_adapter import (
+    MockArcEnvironment, ToolkitArcEnvironment,
+    GameStatus, Action,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,59 +26,74 @@ logging.basicConfig(
 logger = logging.getLogger("run")
 
 
-def run_game(agent: ArcMultigridAgent, env, max_steps: int = 50):
+def run_game(agent: ArcMultigridAgent, env, max_steps: int = 200):
     """Run one game: observe-act loop."""
-    obs, info = env.reset()
+    obs = env.reset()
     agent.reset()
-    logger.info("Game started. Grid shape: %s", obs.shape)
+    logger.info("Game started. Grid shape: %s, win_levels: %d",
+                obs.grid.shape, obs.win_levels)
 
-    total_reward = 0.0
     for step in range(max_steps):
-        # Observe
-        diag = agent.observe(obs, reward=total_reward, done=False, info=info)
+        diag = agent.observe(obs)
 
-        # Act
-        action = agent.act()
-
-        # Step environment
-        obs, reward, done, info = env.step(action)
-        total_reward += reward
-
-        logger.info(
-            "Step %d: reward=%.3f total=%.3f kappa=%.3f done=%s",
-            step, reward, total_reward, diag["kappa"], done,
-        )
-
-        if done:
-            # Final observation
-            agent.observe(obs, reward=reward, done=True, info=info)
+        if obs.status != GameStatus.PLAYING:
+            logger.info("Game ended: %s at step %d", obs.status.value, step)
             break
 
+        action = agent.act()
+        obs = env.step(action)
+
+        logger.info(
+            "Step %d: action=%d levels=%d/%d kappa=%.3f status=%s",
+            step, action.action_id, obs.levels_completed,
+            obs.win_levels, diag["kappa"], obs.status.value,
+        )
+
     summary = agent.summary()
-    summary["game_over"] = done if 'done' in dir() else True
-    summary["win"] = total_reward > 0.9 * max_steps
+    summary["game_over"] = obs.status != GameStatus.PLAYING
+    summary["win"] = obs.status == GameStatus.WIN
     return summary
 
 
 def main():
     parser = argparse.ArgumentParser(description="ARC-AGI-3 Multigrid Agent")
-    parser.add_argument("--toolkit", action="store_true", help="Use official ARC-AGI Toolkit")
-    parser.add_argument("--steps", type=int, default=10, help="Max steps per game")
-    parser.add_argument("--grid-size", type=int, default=10, help="Grid size for mock env")
+    parser.add_argument("--game", type=str, default=None,
+                        help="Game ID for ARC-AGI Toolkit (e.g. ls20)")
+    parser.add_argument("--mock", action="store_true",
+                        help="Use mock environment (default if no --game)")
+    parser.add_argument("--steps", type=int, default=200,
+                        help="Max steps per game")
+    parser.add_argument("--grid-size", type=int, default=10,
+                        help="Grid size for mock env")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--log-file", type=str, default=None, help="Save log to JSON file")
+    parser.add_argument("--render", type=str, default="terminal",
+                        help="Render mode: terminal, terminal-fast, human, none")
+    parser.add_argument("--api-key", type=str, default=None,
+                        help="ARC API key (or set ARC_API_KEY env var)")
+    parser.add_argument("--log-file", type=str, default=None,
+                        help="Save log to JSON file")
     args = parser.parse_args()
 
-    if args.toolkit:
-        env = ToolkitArcEnvironment()
+    use_toolkit = args.game is not None and not args.mock
+
+    if use_toolkit:
+        render = args.render if args.render != "none" else None
+        env = ToolkitArcEnvironment(
+            game_id=args.game,
+            seed=args.seed,
+            render_mode=render,
+            api_key=args.api_key,
+        )
+        logger.info("Using ARC-AGI Toolkit: game=%s", args.game)
     else:
-        env = MockArcEnvironment(grid_size=args.grid_size, num_steps=args.steps, seed=args.seed)
+        env = MockArcEnvironment(
+            grid_size=args.grid_size,
+            num_steps=args.steps,
+            seed=args.seed,
+        )
+        logger.info("Using mock environment: grid=%d, steps=%d", args.grid_size, args.steps)
 
-    agent = ArcMultigridAgent(default_grid_shape=(args.grid_size, args.grid_size))
-
-    logger.info("Running ARC-AGI-3 Multigrid Agent")
-    logger.info("Environment: %s", "Toolkit" if args.toolkit else "Mock")
-
+    agent = ArcMultigridAgent()
     summary = run_game(agent, env, max_steps=args.steps)
 
     logger.info("=== Game Summary ===")
@@ -90,7 +109,7 @@ def main():
         logger.info("Log saved to %s", args.log_file)
 
     env.close()
-    return 0 if summary.get("game_over") else 1
+    return 0 if summary.get("win") else 1
 
 
 if __name__ == "__main__":
